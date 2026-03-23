@@ -1,12 +1,10 @@
 <?php
 session_start();
 
-/* ================= SESSION PROTECTION ================= */
 if(!isset($_SESSION['user'])){
     header("Location: login.php");
     exit();
 }
-/* ====================================================== */
 
 
 
@@ -22,7 +20,6 @@ use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 $eventFile = "events.json";
 $historyFile = "history.json";
 
-/* ================= EVENT REGISTRATION ================= */
 if (isset($_POST['register_event'])) {
     $events = file_exists($eventFile) ? json_decode(file_get_contents($eventFile), true) : [];
 
@@ -41,7 +38,6 @@ if (isset($_POST['register_event'])) {
     exit();
 }
 
-/* ================= SEGREGATION ================= */
 if (isset($_POST['segregate'])) {
 
     if (!file_exists("downloads")) mkdir("downloads", 0777, true);

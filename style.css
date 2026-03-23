@@ -283,3 +283,25 @@ input, select {
 .logout-btn:hover {
     background: rgb(45, 0, 140);
 }
+#events_table_container{
+    overflow-x: auto;
+}
+.btn-delete{
+    white-space:nowrap;
+}
+.page-footer {
+    width: 100%;
+    padding: 12px 20px;
+    background-color: rgb(27,0,93); 
+    color: white;
+    text-align: center;
+    font-size: 14px;
+    position: relative; 
+    bottom: 0;
+    margin-top: 30px; 
+    border-top: 2px solid #fff;
+}
+
+.page-footer strong {
+    font-weight: 600;
+}

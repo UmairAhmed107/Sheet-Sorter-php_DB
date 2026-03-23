@@ -6,7 +6,6 @@ header("Cache-Control: no-cache, no-store, must-revalidate");
 header("Pragma: no-cache");
 header("Expires: 0");
 
-/* ===== LOGOUT ===== */
 if (isset($_GET['logout'])) {
     $_SESSION = [];
     if (ini_get("session.use_cookies")) {
@@ -15,17 +14,14 @@ if (isset($_GET['logout'])) {
             $p["path"], $p["domain"], $p["secure"], $p["httponly"]);
     }
     session_destroy();
-    // Restart a clean empty session so nothing lingers
     session_start();
     session_regenerate_id(true);
-    // Fall through to show login form — do NOT redirect
 }
 
 $valid_user = "Attendance";
 $valid_pass = "SPM@123";
 $error = '';
 
-/* ===== LOGIN ===== */
 if (isset($_POST['login'])) {
     if ($_POST['username'] === $valid_user && $_POST['password'] === $valid_pass) {
         session_regenerate_id(true);
@@ -40,7 +36,7 @@ if (isset($_POST['login'])) {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>VIT Attendance Segregator - Login</title>
+    <title>SMART_ATT-Login</title>
     <link rel="stylesheet" href="style.css">
     <style>
         body { font-family: Arial, sans-serif; background: #f5f5f5; margin:0; padding:0; }
@@ -59,7 +55,7 @@ if (isset($_POST['login'])) {
     </style>
 
     <!-- Disable right-click and devtools -->
-    <script>
+   <script>
         document.addEventListener('contextmenu', e => e.preventDefault());
         document.addEventListener('keydown', e => {
             if (e.key === 'F12') e.preventDefault();

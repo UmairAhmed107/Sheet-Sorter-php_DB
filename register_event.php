@@ -26,7 +26,7 @@ foreach ($eventsRaw as $row) {
         'id'              => $row['id'],
         'name'            => $row['name'],
         'venue'           => $row['venue'],
-        'organising_team' => $row['organising_team'] ?? '',
+        'faculty_coordinator' => $row['faculty_coordinator'] ?? '',
         'school'          => $row['school'] ?? '',
         'phone_number'    => $row['phone_number'] ?? '',
         'event_type'      => $row['event_type'] ?? '',
@@ -91,11 +91,8 @@ foreach ($eventsRaw as $ev) {
     $eventsMonthly[$m]++;
     $dowCounts[$dw]++;
 
-    $dateKey = date('Y-m-d', $ts);
-    $heatmapByDate[$dateKey] = ($heatmapByDate[$dateKey] ?? 0) + 1;
-
     if ($ev['multiday']) {
-        // also mark end_date and in-between days for heatmap
+        // Mark every day of span — no double-count of start date
         $totalMultiDay++;
         $endTs = strtotime($ev['end_date'] ?? $ev['date']);
         for ($d = $ts; $d <= $endTs; $d += 86400) {
@@ -104,6 +101,8 @@ foreach ($eventsRaw as $ev) {
         }
     } else {
         $totalSingleDay++;
+        $dateKey = date('Y-m-d', $ts);
+        $heatmapByDate[$dateKey] = ($heatmapByDate[$dateKey] ?? 0) + 1;
     }
 
     $et = trim($ev['event_type'] ?? '');
@@ -115,7 +114,7 @@ foreach ($eventsRaw as $ev) {
     $venue = trim($ev['venue'] ?? '');
     if ($venue) $venueCounts[$venue] = ($venueCounts[$venue] ?? 0) + 1;
 
-    $team = trim($ev['organising_team'] ?? '');
+    $team = trim($ev['faculty_coordinator'] ?? '');
     if ($team) $teamCounts[$team] = ($teamCounts[$team] ?? 0) + 1;
 }
 
@@ -128,84 +127,46 @@ $lastSegOn            = null;
 $lastEventOn          = null;
 $segregatedEventNames = [];
 $totalStudentsAllRuns = 0;
-$runStudentCounts     = [];
-$runEventCounts       = [];
-$avgEventsPerRun      = 0;
-$maxEventsInRun       = 0;
-$minEventsInRun       = 0;
 
-// School-wise student counts — scan downloaded xlsx files
-// Each xlsx filename pattern: SCHOOL_daterange.xlsx
-// We count rows in each file to get student counts per school
+/* ===== SCHOOL + EVENT STATS — read from DB (no xlsx scanning) ===== */
+
+// School-wise totals from segregation_stats table
 $schoolStudentCounts = [];
-foreach (array_keys($schoolCodes) as $sc) $schoolStudentCounts[$sc] = 0;
-
-if (file_exists("downloads")) {
-    foreach (scandir("downloads") as $f) {
-        if (!str_ends_with($f, '.xlsx')) continue;
-        foreach (array_keys($schoolCodes) as $school) {
-            if (str_starts_with($f, $school.'_')) {
-                // count data rows in the xlsx (approximated by file — use spreadsheet reader)
-                try {
-                    $ss = \PhpOffice\PhpSpreadsheet\IOFactory::load("downloads/$f");
-                    $sh = $ss->getActiveSheet();
-                    $highest = $sh->getHighestRow();
-                    // Count non-empty cells that look like reg numbers (9 chars) across all rows
-                    $count = 0;
-                    foreach ($sh->getRowIterator() as $row) {
-                        foreach ($row->getCellIterator() as $cell) {
-                            $v = trim((string)$cell->getValue());
-                            if (strlen($v) === 9 && ctype_alnum($v)) $count++;
-                        }
-                    }
-                    $schoolStudentCounts[$school] = ($schoolStudentCounts[$school] ?? 0) + $count;
-                } catch (\Exception $e) {
-                    // skip unreadable files
-                }
-                break;
-            }
-        }
+try {
+    $ssRows = $pdo->query("
+        SELECT school_name, SUM(student_count) AS total
+        FROM segregation_stats
+        GROUP BY school_name
+        ORDER BY total DESC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($ssRows as $r) {
+        if ((int)$r['total'] > 0)
+            $schoolStudentCounts[$r['school_name']] = (int)$r['total'];
     }
-}
-arsort($schoolStudentCounts);
-$schoolStudentCounts = array_filter($schoolStudentCounts, fn($v) => $v > 0);
+} catch (\Exception $e) { $schoolStudentCounts = []; }
 
-// Per-event student participation: scan downloads for SCHOOL_cleanEventName_date.xlsx
-$eventParticipation = []; // eventName => ['count'=>N, 'schools'=>N]
-if (file_exists("downloads")) {
-    foreach (scandir("downloads") as $f) {
-        if (!str_ends_with($f, '.xlsx')) continue;
-        foreach ($eventsRaw as $ev) {
-            $clean = preg_replace('/[^A-Za-z0-9]/', '_', $ev['name']);
-            if (strpos($f, $clean) !== false) {
-                // Count students in this file
-                try {
-                    $ss = \PhpOffice\PhpSpreadsheet\IOFactory::load("downloads/$f");
-                    $sh = $ss->getActiveSheet();
-                    $cnt = 0;
-                    foreach ($sh->getRowIterator() as $row) {
-                        foreach ($row->getCellIterator() as $cell) {
-                            $v = trim((string)$cell->getValue());
-                            if (strlen($v) === 9 && ctype_alnum($v)) $cnt++;
-                        }
-                    }
-                    if (!isset($eventParticipation[$ev['name']])) {
-                        $eventParticipation[$ev['name']] = ['count'=>0,'schools'=>0];
-                    }
-                    $eventParticipation[$ev['name']]['count']   += $cnt;
-                    $eventParticipation[$ev['name']]['schools'] += 1;
-                } catch (\Exception $e) {}
-                break;
-            }
-        }
-    }
-}
-uasort($eventParticipation, fn($a,$b) => $b['count'] - $a['count']);
-// Build JS-ready array
+// Per-event participation from segregation_stats table
 $eventParticipationArr = [];
-foreach ($eventParticipation as $name => $data) {
-    $eventParticipationArr[] = ['name'=>$name,'count'=>$data['count'],'schools'=>$data['schools']];
-}
+try {
+    $epRows = $pdo->query("
+        SELECT event_name,
+               SUM(student_count)          AS total_students,
+               COUNT(DISTINCT school_name) AS school_count
+        FROM segregation_stats
+        GROUP BY event_name
+        ORDER BY total_students DESC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($epRows as $r) {
+        $eventParticipationArr[] = [
+            'name'    => $r['event_name'],
+            'count'   => (int)$r['total_students'],
+            'schools' => (int)$r['school_count'],
+        ];
+    }
+} catch (\Exception $e) { $eventParticipationArr = []; }
+
+// Most/least attended — derived from DB data above (real counts, not file count)
+$eventAttendance = array_column($eventParticipationArr, 'count', 'name');
 
 foreach ($historyRaw as $h) {
     $m = (int)date('n', strtotime($h['segregated_on']));
@@ -239,31 +200,7 @@ $avgEventsPerRun = $totalSegregationRuns > 0 ? round(array_sum($runEventCounts) 
 $maxEventsInRun  = !empty($runEventCounts) ? max($runEventCounts) : 0;
 $minEventsInRun  = !empty($runEventCounts) ? min($runEventCounts) : 0;
 
-// Peak month / dow
-$peakEvMonth = array_search(max($eventsMonthly), $eventsMonthly);
-$peakDow     = array_search(max($dowCounts), $dowCounts);
 
-// Smart insights
-$smartInsights = [];
-if ($totalEventsRegistered > 0)
-    $smartInsights[] = "📅 <strong>".$monthNamesShort[$peakEvMonth]."</strong> was the most active month (".($eventsMonthly[$peakEvMonth])." events).";
-if ($totalPending > 0)
-    $smartInsights[] = "⏳ <strong>$totalPending</strong> event(s) registered but not yet segregated.";
-if ($totalMultiDay > 0) {
-    $pct = round($totalMultiDay / max($totalEventsRegistered,1) * 100);
-    $smartInsights[] = "📆 <strong>$pct%</strong> of events are multi-day ($totalMultiDay out of $totalEventsRegistered).";
-}
-if ($totalSegregationRuns > 0)
-    $smartInsights[] = "⚡ System has processed <strong>$totalSegregationRuns</strong> segregation(s) done.";
-if (!empty($dowCounts) && max($dowCounts) > 0)
-    $smartInsights[] = "📆 Busiest day: <strong>".$dayNames[$peakDow]."</strong> (".max($dowCounts)." events).";
-if ($lastSegOn)
-    $smartInsights[] = "🕓 Last segregation: <strong>".date('d M Y, h:i A', strtotime($lastSegOn))."</strong>.";
-if ($lastEventOn)
-    $smartInsights[] = "📋 Most recently registered: <strong>$lastEventOn</strong>.";
-$topType = !empty($eventTypeCounts) ? array_search(max($eventTypeCounts), $eventTypeCounts) : null;
-if ($topType && $eventTypeCounts[$topType] > 0)
-    $smartInsights[] = "🏆 Most common event type: <strong>$topType</strong> ({$eventTypeCounts[$topType]} events).";
 if (!empty($teamCounts)) {
     $topTeam = array_key_first($teamCounts);
     $smartInsights[] = "🥇 Top organising team: <strong>$topTeam</strong> ({$teamCounts[$topTeam]} events).";
@@ -279,33 +216,36 @@ if (!empty($schoolStudentCounts)) {
 }
 // Most & least attended event (by total students across school files per event date)
 // Approximate: most attended = event whose date has most school xlsx files generated
-$eventAttendance = [];
-if (file_exists("downloads")) {
-    foreach (scandir("downloads") as $f) {
-        if (!str_ends_with($f, '.xlsx')) continue;
-        // filename: SCHOOL_eventname_date.xlsx or SCHOOL_daterange.xlsx
-        // Try to match against event names
-        foreach ($eventsRaw as $ev) {
-            $clean = preg_replace('/[^A-Za-z0-9]/', '_', $ev['name']);
-            if (strpos($f, $clean) !== false) {
-                $eventAttendance[$ev['name']] = ($eventAttendance[$ev['name']] ?? 0) + 1;
-            }
-        }
-    }
-}
 if (count($eventAttendance) >= 1) {
     arsort($eventAttendance);
-    $mostEv  = array_key_first($eventAttendance);
-    $smartInsights[] = "🎯 Most attended event: <strong>$mostEv</strong> ({$eventAttendance[$mostEv]} school file(s) generated).";
+    $mostEv = array_key_first($eventAttendance);
+    $smartInsights[] = "🎯 Most attended event: <strong>".htmlspecialchars($mostEv,ENT_QUOTES,'UTF-8')."</strong> (".number_format($eventAttendance[$mostEv])." students).";
     if (count($eventAttendance) >= 2) {
         asort($eventAttendance);
         $leastEv = array_key_first($eventAttendance);
-        $smartInsights[] = "📉 Least attended event: <strong>$leastEv</strong> ({$eventAttendance[$leastEv]} school file(s) generated).";
+        $smartInsights[] = "📉 Least attended event: <strong>".htmlspecialchars($leastEv,ENT_QUOTES,'UTF-8')."</strong> (".number_format($eventAttendance[$leastEv])." students).";
     }
 }
 
 /* ================= EVENT REGISTRATION ================= */
 if (isset($_POST['register_event'])) {
+    // Sanitise all user inputs
+    $inputName   = trim(substr($_POST['event_name']      ?? '', 0, 255));
+    $inputVenue  = trim(substr($_POST['event_venue']     ?? '', 0, 255));
+    $inputTeam   = trim(substr($_POST['faculty_coordinator'] ?? '', 0, 100));
+    $inputSchool = trim(substr($_POST['school']          ?? '', 0, 100));
+    $inputPhone  = trim(substr($_POST['phone_number']    ?? '', 0, 15));
+    $inputType   = trim($_POST['event_type'] ?? '');
+
+    // Whitelist event_type
+    $validTypes = ['Expert Talk','Mentoring Session','Workshop','Seminar','Boot Camp','Expo','Demo Day / Competition','Tech Fest / Hackathon / Ideathon'];
+    if (!in_array($inputType, $validTypes, true)) $inputType = '';
+
+    if (empty($inputName) || empty($inputVenue)) {
+        header("Location: register_event.php?error=invalid");
+        exit();
+    }
+
     $isMultiday = isset($_POST['is_multiday']) && $_POST['is_multiday'] == '1';
 
     if ($isMultiday) {
@@ -318,11 +258,9 @@ if (isset($_POST['register_event'])) {
         }
         usort($days, fn($a,$b) => strcmp($a['date'], $b['date']));
 
-        $stmt = $pdo->prepare("INSERT INTO events (name, venue, organising_team, school, phone_number, event_type, multiday, date, end_date, days) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO events (name, venue, faculty_coordinator, school, phone_number, event_type, multiday, date, end_date, days) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
         $stmt->execute([
-            $_POST['event_name'], $_POST['event_venue'], $_POST['organising_team'] ?? '',
-            $_POST['school'] ?? '', $_POST['phone_number'] ?? '',
-            $_POST['event_type'] ?? '',
+            $inputName, $inputVenue, $inputTeam, $inputSchool, $inputPhone, $inputType,
             $days[0]['date'], end($days)['date'], json_encode($days)
         ]);
     } else {
@@ -330,11 +268,9 @@ if (isset($_POST['register_event'])) {
               . " - "
               . $_POST['to_hour'].":".$_POST['to_minute']." ".$_POST['to_ampm'];
 
-        $stmt = $pdo->prepare("INSERT INTO events (name, venue, organising_team, school, phone_number, event_type, multiday, date, time) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)");
+        $stmt = $pdo->prepare("INSERT INTO events (name, venue, faculty_coordinator, school, phone_number, event_type, multiday, date, time) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)");
         $stmt->execute([
-            $_POST['event_name'], $_POST['event_venue'], $_POST['organising_team'] ?? '',
-            $_POST['school'] ?? '', $_POST['phone_number'] ?? '',
-            $_POST['event_type'] ?? '',
+            $inputName, $inputVenue, $inputTeam, $inputSchool, $inputPhone, $inputType,
             $_POST['event_date'], $time
         ]);
     }
@@ -353,8 +289,10 @@ if (isset($_POST['delete_event'])) {
 
 /* ================= DELETE HISTORY RECORD ================= */
 if (isset($_POST['delete_history'])) {
-    $stmt = $pdo->prepare("DELETE FROM segregation_history WHERE id = ?");
-    $stmt->execute([(int)$_POST['history_id']]);
+    $hid = (int)$_POST['history_id'];
+    // Delete stats first (safety net — FK CASCADE also handles this)
+    $pdo->prepare("DELETE FROM segregation_stats WHERE history_id = ?")->execute([$hid]);
+    $pdo->prepare("DELETE FROM segregation_history WHERE id = ?")->execute([$hid]);
     header("Location: register_event.php?tab=admin");
     exit();
 }
@@ -389,7 +327,7 @@ if (isset($_POST['segregate_all'])) {
             $eventMeta[$index] = [
                 "name"            => $eventName,
                 "venue"           => $evObj['venue'] ?? '',
-                "organising_team" => $evObj['organising_team'] ?? '',
+                "faculty_coordinator" => $evObj['faculty_coordinator'] ?? '',
                 "multiday"        => true,
                 "days"            => $evObj['days']
             ];
@@ -426,7 +364,7 @@ if (isset($_POST['segregate_all'])) {
             $eventMeta[$index] = [
                 "name"            => $eventName,
                 "venue"           => $evObj['venue'] ?? '',
-                "organising_team" => $evObj['organising_team'] ?? '',
+                "faculty_coordinator" => $evObj['faculty_coordinator'] ?? '',
                 "multiday"        => false,
                 "days"            => [["date" => $date, "time" => $time]]
             ];
@@ -570,11 +508,27 @@ if (isset($_POST['segregate_all'])) {
     arsort($schoolTotals);
     $runTotalStudents = array_sum($schoolTotals);
 
+    // Compute date range early — used by summary filename and display
+    $_earlyRunDates = [];
+    foreach ($schoolEventData as $_esArr) {
+        foreach ($_esArr as $_edArr) {
+            foreach (array_keys($_edArr) as $_ed) {
+                if (!empty($_ed)) $_earlyRunDates[$_ed] = $_ed;
+            }
+        }
+    }
+    ksort($_earlyRunDates);
+    $runDateFrom = !empty($_earlyRunDates) ? array_key_first($_earlyRunDates) : date("Y-m-d");
+    $runDateTo   = !empty($_earlyRunDates) ? array_key_last($_earlyRunDates)  : $runDateFrom;
+    $zipLabel    = ($runDateFrom === $runDateTo) ? $runDateFrom : $runDateFrom."_to_".$runDateTo;
+
+
     $runOnDate   = date('d M Y, h:i A');
     $runDateDisp = ($runDateFrom === $runDateTo)
         ? date('d M Y', strtotime($runDateFrom))
         : date('d M Y', strtotime($runDateFrom)).' - '.date('d M Y', strtotime($runDateTo));
 
+    // ── Build plain-text lines for the summary ──
     $sep  = "=======================================================";
     $dash = "-------------------------------------------------------";
     $txtLines = [];
@@ -588,7 +542,7 @@ if (isset($_POST['segregate_all'])) {
     foreach ($eventMeta as $meta) {
         $typeTag = $meta['multiday'] ? " [Multi-day]" : " [Single-day]";
         $txtLines[] = "  * ".$meta['name'].$typeTag;
-        $txtLines[] = "    Venue: ".$meta['venue'].(!empty($meta['organising_team']) ? " | Faculty: ".$meta['organising_team'] : "");
+        $txtLines[] = "    Venue: ".$meta['venue'].(!empty($meta['faculty_coordinator']) ? " | Faculty: ".$meta['faculty_coordinator'] : "");
         foreach (($meta['days'] ?? []) as $d) {
             $dstr = !empty($d['date']) ? date('d M Y', strtotime($d['date'])) : '';
             $tstr = !empty($d['time']) ? " | ".$d['time'] : '';
@@ -609,10 +563,14 @@ if (isset($_POST['segregate_all'])) {
     $txtLines[] = "  VIT-IST | Office of Innovation, Startup & Technology Transfer";
     $txtLines[] = $sep;
 
-    $summaryFileName = "Segregation_Summary_".$zipLabel.".txt";
-    $summaryFilePath = "downloads/".$summaryFileName;
-    file_put_contents($summaryFilePath, implode("\n", $txtLines));
-    $createdFiles[] = $summaryFileName;
+    // ── Store summary lines in session — PDF generated client-side via jsPDF ──
+    $_SESSION['summary_lines'] = $txtLines;
+    $_SESSION['summary_filename'] = "Segregation_Summary_".$zipLabel.".pdf";
+
+    // ── Also save as TXT file so it can be bundled into the ZIP ──
+    $summaryTxtName = "Segregation_Summary_".$zipLabel.".txt";
+    $summaryTxtPath = "downloads/".$summaryTxtName;
+    file_put_contents($summaryTxtPath, implode("\n", $txtLines));
 
     /* ===== CREATE ONE ZIP (includes TXT summary) ===== */
     $createdZips = [];
@@ -636,8 +594,8 @@ if (isset($_POST['segregate_all'])) {
             foreach (array_unique($allSchoolFiles) as $fp) {
                 $zip->addFile($fp, basename($fp));
             }
-            // Include the TXT summary in the zip
-            $zip->addFile($summaryFilePath, $summaryFileName);
+            // Include the TXT summary in the ZIP
+            $zip->addFile($summaryTxtPath, $summaryTxtName);
             $zip->close();
         }
         $createdFiles[] = basename($zipFileName);
@@ -645,16 +603,6 @@ if (isset($_POST['segregate_all'])) {
     }
 
     /* ===== UPDATE HISTORY ===== */
-    $runDates = [];
-    foreach ($schoolEventData as $schoolArr) {
-        foreach ($schoolArr as $dateArr) {
-            foreach (array_keys($dateArr) as $d) {
-                if (!empty($d)) $runDates[$d] = $d;
-            }
-        }
-    }
-    ksort($runDates);
-
     $runEventSummary = [];
     foreach ($eventMeta as $meta) {
         $dayStrings = array_map(
@@ -664,21 +612,51 @@ if (isset($_POST['segregate_all'])) {
         $runEventSummary[] = [
             "name"            => $meta['name'],
             "venue"           => $meta['venue'],
-            "organising_team" => $meta['organising_team'] ?? '',
+            "faculty_coordinator" => $meta['faculty_coordinator'] ?? '',
             "multiday"        => $meta['multiday'],
             "days"            => $dayStrings
         ];
     }
 
-    $runDateFrom = !empty($runDates) ? array_key_first($runDates) : date("Y-m-d");
-    $runDateTo   = !empty($runDates) ? array_key_last($runDates)  : $runDateFrom;
-    $dateLabel   = ($runDateFrom === $runDateTo) ? $runDateFrom : $runDateFrom." to ".$runDateTo;
+    $dateLabel = ($runDateFrom === $runDateTo) ? $runDateFrom : $runDateFrom." to ".$runDateTo;
 
+    /* ===== SAVE HISTORY + WRITE STATS TO DB ===== */
+    $segregatedOn = date("Y-m-d H:i:s");
+
+    // 1. Insert history row — need the auto-increment ID for stats FK
     $stmt = $pdo->prepare("INSERT INTO segregation_history (run_date_range, date_from, date_to, segregated_on, events, zips) VALUES (?, ?, ?, ?, ?, ?)");
     $stmt->execute([
-        $dateLabel, $runDateFrom, $runDateTo, date("Y-m-d H:i:s"),
+        $dateLabel, $runDateFrom, $runDateTo, $segregatedOn,
         json_encode($runEventSummary), json_encode($createdZips)
     ]);
+    $historyId = (int)$pdo->lastInsertId();
+
+    // 2. Compute per-event per-school student counts from $schoolEventData
+    //    Structure: $schoolEventData[$eventIndex][$school][$date][$code][] = $regNo
+    $eventSchoolCounts = [];
+    foreach ($schoolEventData as $idx => $schoolArr) {
+        foreach ($schoolArr as $school => $dateArr) {
+            $cnt = 0;
+            foreach ($dateArr as $codeArr) {
+                foreach ($codeArr as $regList) {
+                    $cnt += is_array($regList) ? count($regList) : 0;
+                }
+            }
+            if ($cnt > 0) $eventSchoolCounts[$idx][$school] = $cnt;
+        }
+    }
+
+    // 3. Batch insert into segregation_stats — one row per school per event
+    $statsStmt = $pdo->prepare("
+        INSERT INTO segregation_stats (history_id, school_name, event_name, student_count, segregated_on)
+        VALUES (?, ?, ?, ?, ?)
+    ");
+    foreach ($eventMeta as $idx => $meta) {
+        $evName = substr(trim($meta['name']), 0, 255);
+        foreach (($eventSchoolCounts[$idx] ?? []) as $school => $cnt) {
+            $statsStmt->execute([$historyId, $school, $evName, $cnt, $segregatedOn]);
+        }
+    }
 
     $_SESSION['files'] = $createdFiles;
     header("Location: register_event.php?tab=segregation&segregation=done");
@@ -689,7 +667,7 @@ if (isset($_POST['segregate_all'])) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>VIT Attendance Segregator</title>
+    <title>SMART_ATT</title>
     <link rel="stylesheet" href="style.css">
     <style>
         .event-box { border:1px solid #d0d0d0; padding:18px; margin-bottom:14px; border-radius:10px; background:#f9f9f9; }
@@ -827,16 +805,16 @@ if (isset($_POST['segregate_all'])) {
                 <input type="text" name="event_venue" required>
             </div>
             <div class="form-row">
-                <label>Faculty Coordinator <span style="color:red">*</span></label>
-                <input type="text" name="organising_team" required>
+                <label>Faculty Coordinator </label>
+                <input type="text" name="faculty_coordinator" required>
             </div>
             <div class="form-row">
-                <label>School <span style="color:red">*</span></label>
+                <label>School </label>
                 <input type="text" name="school" required>
             </div>
             <div class="form-row">
-                <label>Phone Number <span style="color:red">*</span></label>
-                <input type="tel" name="phone_number" required pattern="[0-9]{10}" maxlength="10" placeholder="10-digit mobile number" title="Enter a valid 10-digit phone number">
+                <label>Phone Number <span style="color:#999;font-size:12px;">(optional)</span></label>
+                <input type="tel" name="phone_number" pattern="[0-9]{10}" maxlength="10" placeholder="10-digit mobile number (optional)" title="Enter a valid 10-digit phone number">
             </div>
             <div class="form-row">
                 <label>Event Type <span style="color:red">*</span></label>
@@ -922,39 +900,41 @@ if (isset($_POST['segregate_all'])) {
             if (isset($_SESSION['files'])) {
                 echo "<hr><h3 style='color:green;margin-bottom:14px;'>✅ Segregation Completed Successfully</h3>";
 
-                $zipFiles     = array_filter($_SESSION['files'], fn($f) => str_ends_with($f, '.zip'));
-                $summaryFiles = array_filter($_SESSION['files'], fn($f) => str_ends_with($f, '.txt'));
-                $schoolFiles  = array_filter($_SESSION['files'], fn($f) =>
-                    !str_ends_with($f, '.zip') && !str_ends_with($f, '.txt'));
+                $zipFiles    = array_filter($_SESSION['files'], fn($f) => str_ends_with($f, '.zip'));
+                $schoolFiles = array_filter($_SESSION['files'], fn($f) => !str_ends_with($f, '.zip'));
 
-                // ---- Summary TXT link ----
-                foreach ($summaryFiles as $file) {
-                    $sf = htmlspecialchars($file);
+                // ---- Summary PDF button (client-side jsPDF) ----
+                if (!empty($_SESSION['summary_lines'])) {
+                    $jsLines  = json_encode($_SESSION['summary_lines']);
+                    $jsFname  = json_encode($_SESSION['summary_filename'] ?? 'Segregation_Summary.pdf');
                     echo "
                     <div style='background:#f0eeff;border:2px solid rgb(27,0,93);border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;'>
                         <div>
                             <div style='font-weight:700;color:rgb(27,0,93);font-size:15px;'>📄 Segregation Summary Report</div>
-                            <div style='font-size:12px;color:#666;margin-top:3px;'>Plain text summary of this segregation run</div>
+                            <div style='font-size:12px;color:#666;margin-top:3px;'>PDF summary of this segregation run</div>
                         </div>
-                        <a href='downloads/$sf' download style='padding:10px 22px;background:rgb(27,0,93);color:white;border-radius:8px;font-weight:700;text-decoration:none;font-size:13px;'>⬇ Download Summary (.txt)</a>
+                        <button onclick='downloadSegSummaryPDF($jsLines,$jsFname)'
+                            style='padding:10px 22px;background:rgb(27,0,93);color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px;'>
+                            ⬇ Download Summary 
+                        </button>
                     </div>";
+                    unset($_SESSION['summary_lines'], $_SESSION['summary_filename']);
                 }
 
                 // ---- ZIP download ----
                 foreach ($zipFiles as $file) {
                     $sf = htmlspecialchars($file);
-                    echo "<div style='margin-bottom:14px;'><strong>📦 Download All Schools (ZIP — includes summary):</strong><br>
+                    echo "<div style='margin-bottom:14px;'><strong>📦 Download All Schools (ZIP):</strong><br>
                         <a href='downloads/$sf' target='_blank' style='color:navy;'>⬇ $sf</a></div>";
                 }
 
                 // ---- Individual school files ----
                 if (!empty($schoolFiles)) {
-                    echo "<details style='margin-top:4px;'><summary style='cursor:pointer;font-weight:700;color:rgb(27,0,93);padding:6px 0;'>📁 Individual School Files (".count($schoolFiles).")</summary><div style='margin-top:8px;'>";
+                    echo "<div style='margin-top:8px;'><strong style='color:rgb(27,0,93);'>📁 Individual School Files (" . count($schoolFiles) . ")</strong></div>";
                     foreach ($schoolFiles as $file) {
                         $sf = htmlspecialchars($file);
                         echo "<p style='margin:4px 0 4px 12px;'>⬇ <a href='downloads/$sf' target='_blank'>$sf</a></p>";
                     }
-                    echo "</div></details>";
                 }
 
                 unset($_SESSION['files']);
@@ -1023,6 +1003,12 @@ if (isset($_POST['segregate_all'])) {
         <!-- ANALYTICS SUB-TAB -->
         <div id="admin_analytics_tab" style="display:none;">
 
+            <!-- Loading spinner — shown while AJAX fetch runs -->
+            <div id="analytics_loading_msg" style="display:none;text-align:center;padding:40px;color:rgb(27,0,93);">
+                <div style="font-size:32px;margin-bottom:12px;">⏳</div>
+                <div style="font-weight:700;font-size:15px;">Loading analytics data…</div>
+            </div>
+
             <!-- ===== TIME FILTER PILLS + EVENT TYPE + DOWNLOAD ===== -->
             <div style="background:#fff;border:1px solid #e8e8e8;border-radius:14px;padding:16px 20px;margin-bottom:18px;">
                 <!-- Row 1: Time pills + showing label -->
@@ -1080,7 +1066,7 @@ if (isset($_POST['segregate_all'])) {
                         <option>Demo Day / Competition</option>
                         <option>Tech Fest / Hackathon / Ideathon</option>
                     </select>
-                    <button onclick="downloadAnalyticsTXT()" style="margin-left:auto;padding:8px 18px;background:rgb(27,0,93);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">⬇ Download Analytics Report (.txt)</button>
+                    <button onclick="downloadAnalyticsTXT()" style="margin-left:auto;padding:8px 18px;background:rgb(27,0,93);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">⬇ Download Analytics Report </button>
                 </div>
             </div>
 
@@ -1110,27 +1096,7 @@ if (isset($_POST['segregate_all'])) {
                 <!-- Pending Events card -->
                 <div class="chart-card" style="flex:1.2;min-width:300px;">
                     <div class="chart-title" style="color:#e74c3c;">⚠️ Pending Events (Registered but Never Segregated)</div>
-                    <?php if (empty($pendingEvents)): ?>
-                        <p style="color:green;font-weight:bold;margin-top:12px;">✅ All events have been segregated.</p>
-                    <?php else: foreach ($pendingEvents as $pev):
-                        $pdate = $pev['multiday']
-                            ? date('d M Y',strtotime($pev['date'])).' – '.date('d M Y',strtotime($pev['end_date']??$pev['date']))
-                            : date('d M Y',strtotime($pev['date']));
-                    ?>
-                    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid #f5dada;border-radius:8px;margin-bottom:8px;background:#fff9f9;">
-                        <div>
-                            <div style="display:flex;align-items:center;gap:8px;">
-                                <span style="font-size:16px;">📋</span>
-                                <span style="font-weight:700;color:#222;"><?= htmlspecialchars($pev['name']) ?></span>
-                                <span style="color:#888;font-size:12px;">— <?= htmlspecialchars($pev['venue']) ?></span>
-                            </div>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
-                            <span style="font-size:12px;color:#555;"><?= $pdate ?></span>
-                            <span style="background:#e74c3c;color:white;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;">Pending</span>
-                        </div>
-                    </div>
-                    <?php endforeach; endif; ?>
+                    <div id="pending_events_list"></div>
                 </div>
 
                 <!-- Segregation Stats table -->
@@ -1319,10 +1285,9 @@ if (isset($_POST['segregate_all'])) {
             <h2>WELCOME TO SMART ATTENDANCE SEGREGATOR</h2>
             <h2>Please read this page!</h2>
             <ul>
-                <li>Event Name must be unique.</li>
-                <li>Event details must be accurate.</li>
-                <li>For multi-day events, add one slot per day with its own date and time.</li>
-                <li>For multi-day segregation, each day gets its own Excel upload box.</li>
+                <li>Enter accurate event details.</li>
+                <li>For events spanning multiple days, add a slot for each day with its respective date & time.</li>
+                <li>Each day of a multiple-day event will require a separate Excel upload during segregation.</li>
             </ul>
             <button id="closeModal">I Understand</button>
         </div>
@@ -1501,6 +1466,7 @@ numEventsSelect.addEventListener('change', function () {
             const val = this.value;
             const uploadContainer = document.getElementById('event_upload_' + idx);
             uploadContainer.innerHTML = '';
+            syncEventSelects();
             if (!val) return;
             const evName = val.split('||')[0];
             const evObj  = availableEvents.find(e => e.name === evName);
@@ -1509,6 +1475,27 @@ numEventsSelect.addEventListener('change', function () {
         });
     });
 });
+
+function syncEventSelects() {
+    const allSelects = document.querySelectorAll('.event-name-select');
+    const chosenVals = new Set();
+    allSelects.forEach(s => { if (s.value) chosenVals.add(s.value); });
+    allSelects.forEach(sel => {
+        sel.querySelectorAll('option').forEach(opt => {
+            if (!opt.value) return;
+            const takenByOther = chosenVals.has(opt.value) && opt.value !== sel.value;
+            opt.disabled = takenByOther;
+            opt.style.color      = takenByOther ? '#bbb' : '';
+            opt.style.fontStyle  = takenByOther ? 'italic' : '';
+            opt.style.background = takenByOther ? '#f0f0f0' : '';
+            if (takenByOther && !opt.text.startsWith('\u2715 ')) {
+                opt.text = '\u2715 ' + opt.text;
+            } else if (!takenByOther && opt.text.startsWith('\u2715 ')) {
+                opt.text = opt.text.slice(2);
+            }
+        });
+    });
+}
 
 /* ==================== ADMIN PANEL ==================== */
 const allHistoryData = <?php
@@ -1527,7 +1514,7 @@ const allHistoryData = <?php
         $teamsList      = [];
         foreach (($record['events'] ?? []) as $ev) {
             if (!is_array($ev)) continue;
-            $team  = $ev['organising_team'] ?? '';
+            $team  = $ev['faculty_coordinator'] ?? '';
             $ename = $ev['name'] ?? '';
             $days  = isset($ev['days']) ? implode('; ', (array)$ev['days']) : '';
             $eventSummaries[] = $ename." | ".($ev['venue'] ?? '').($days ? " | ".$days : "");
@@ -1569,7 +1556,13 @@ function switchAdminTab(tab) {
     document.querySelectorAll('.admin-tab')[0].classList.toggle('active', tab === 'events');
     document.querySelectorAll('.admin-tab')[1].classList.toggle('active', tab === 'history');
     document.querySelectorAll('.admin-tab')[2].classList.toggle('active', tab === 'analytics');
-    if (tab === 'analytics') setTimeout(initCharts, 50);
+    if (tab === 'analytics') {
+        if (!analyticsLoaded) {
+            loadAnalyticsData();
+        } else {
+            setTimeout(initCharts, 50);
+        }
+    }
 }
 
 function getFilteredEvents() {
@@ -1637,43 +1630,63 @@ function renderEventsPage() {
     }
 
     let html = `<p class="section-count">Showing ${start+1}–${Math.min(start+PAGE_SIZE,total)} of ${total} events</p>`;
-    html += `<table><tr>
+    html += `<table style="width:100%;"><tr>
         <th>#</th><th>Event Name</th><th>Venue</th><th>Faculty Coordinator</th>
         <th>School</th><th>Phone Number</th>
-        <th>Event Type</th><th>Day Type</th><th>Date(s)</th><th>Time</th><th>Action</th>
+        <th>Event Type</th><th>Day Type</th><th style="width:120px;">Date &amp; Time</th>
+<th style="width:90px;">Action</th>
     </tr>`;
 
     slice.forEach((ev, i) => {
-        const typeLabel   = ev.multiday ? '<span class="badge-multi">Multi-day</span>' : 'Single Day';
-        const dateDisplay = ev.multiday
-            ? `${formatDate(ev.date)} – ${formatDate(ev.end_date || ev.date)}`
-            : formatDate(ev.date);
-        const timeDisplay = ev.multiday
-            ? (ev.days ? ev.days.map(d => `${formatDate(d.date)}: ${d.time}`).join('<br>') : '–')
-            : (ev.time || '–');
+        const typeLabel = ev.multiday ? '<span class="badge-multi">Multi-day</span>' : 'Single Day';
+
+        // Build combined date & time cell
+        let dtDisplay = '';
+        if (ev.multiday && ev.days && ev.days.length > 0) {
+            dtDisplay = ev.days.map((d, idx) => {
+                const dateStr = formatDate(d.date);
+                const timeStr = d.time || '';
+                return `<div style="margin-bottom:5px;">` +
+                    `<span style="font-weight:700;color:rgb(27,0,93);font-size:12px;">Day ${idx+1} &nbsp;${dateStr}</span>` +
+                    (timeStr ? `<br><span style="color:#555;font-size:11px;padding-left:2px;">${timeStr}</span>` : '') +
+                    `</div>`;
+            }).join('');
+        } else {
+            const dateStr = formatDate(ev.date);
+            const timeStr = ev.time || '';
+            dtDisplay = `<span style="font-weight:700;color:rgb(27,0,93);font-size:12px;">${dateStr}</span>` +
+                (timeStr ? `<br><span style="color:#555;font-size:11px;">${timeStr}</span>` : '');
+        }
+
         const safeName = ev.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
         const evTypeBadge = ev.event_type
             ? `<span style="background:#e8e0ff;color:rgb(27,0,93);font-size:11px;padding:2px 7px;border-radius:10px;white-space:nowrap;">${ev.event_type}</span>`
             : '–';
 
         html += `<tr>
-            <td>${start+i+1}</td>
-            <td>${ev.name}</td>
-            <td>${ev.venue}</td>
-            <td>${ev.organising_team || '–'}</td>
-            <td>${ev.school || '–'}</td>
-            <td>${ev.phone_number || '–'}</td>
-            <td>${evTypeBadge}</td>
-            <td>${typeLabel}</td>
-            <td style="white-space:nowrap;">${dateDisplay}</td>
-            <td style="font-size:12px;">${timeDisplay}</td>
-            <td>
-                <form method="POST" onsubmit="return confirm('Delete event \\'${safeName}\\'. This cannot be undone.');">
-                    <input type="hidden" name="event_id" value="${ev.id}">
-                    <button type="submit" name="delete_event" class="btn-delete">🗑 Delete</button>
-                </form>
-            </td>
-        </tr>`;
+<td>${start+i+1}</td>
+<td>${ev.name}</td>
+<td>${ev.venue}</td>
+<td>${ev.faculty_coordinator || '–'}</td>
+<td>${ev.school || '–'}</td>
+<td>${ev.phone_number || '–'}</td>
+<td>${evTypeBadge}</td>
+<td>${typeLabel}</td>
+
+<td style="width:120px;line-height:1.3;font-size:11px;">
+${dtDisplay}
+</td>
+
+<td style="width:95px;text-align:center;">
+<form method="POST" onsubmit="return confirm('Delete event \\'${safeName}\\'. This cannot be undone.');">
+<input type="hidden" name="event_id" value="${ev.id}">
+<button type="submit" name="delete_event" class="btn-delete" style="padding:3px 6px;font-size:11px;">
+🗑 Delete
+</button>
+</form>
+</td>
+
+</tr>`;
     });
 
     html += '</table>';
@@ -1820,27 +1833,130 @@ window.addEventListener("load", function () {
 const monthLabels           = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const dowLabels             = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const allEventsForAnalytics = <?php echo json_encode($events); ?>;
-const segregMonthlyData     = <?php echo json_encode(array_values($segregMonthly)); ?>;
-const heatmapByDateAll      = <?php echo json_encode($heatmapByDate); ?>;
-const venueLabels           = <?php echo json_encode(array_keys(array_slice($venueCounts,0,10,true))); ?>;
-const venueCounts_          = <?php echo json_encode(array_values(array_slice($venueCounts,0,10,true))); ?>;
-const teamLabels            = <?php echo json_encode(array_keys(array_slice($teamCounts,0,10,true))); ?>;
-const teamCounts_           = <?php echo json_encode(array_values(array_slice($teamCounts,0,10,true))); ?>;
-const schoolLabelsJS        = <?php echo json_encode(array_keys($schoolStudentCounts)); ?>;
-const schoolCountsJS        = <?php echo json_encode(array_values($schoolStudentCounts)); ?>;
-const eventParticipationJS  = <?php echo json_encode($eventParticipationArr); ?>;
-const totalSegRunsAll       = <?= $totalSegregationRuns ?>;
-const totalPendingAll       = <?= $totalPending ?>;
-const totalStudentsAll      = <?= $totalStudentsAllRuns ?>;
-const avgStudentsPerRunAll  = <?= $avgStudentsPerRun ?>;
-const avgEventsPerRunAll    = <?= $avgEventsPerRun ?>;
-const allSegHistoryJS       = <?php
+
+// These are populated by loadAnalyticsData() — empty until analytics tab is opened
+let analyticsLoaded   = false;
+let segregMonthlyData = [];
+let heatmapByDateAll  = {};
+let venueLabels       = [];
+let venueCounts_      = [];
+let teamLabels        = [];
+let teamCounts_       = [];
+let schoolLabelsJS    = [];
+let schoolDateStats   = [];
+let schoolCountsJS    = [];
+let eventParticipationJS = [];
+let totalSegRunsAll      = <?= $totalSegregationRuns ?>;
+let totalPendingAll      = <?= $totalPending ?>;
+let totalStudentsAll     = 0;
+let avgStudentsPerRunAll  = 0;
+let avgEventsPerRunAll    = <?= $avgEventsPerRun ?>;
+let allSegHistoryJS       = <?php
     $js = [];
-    foreach($historyRaw as $h) {
+    foreach ($historyRaw as $h) {
         $js[] = ['segregated_on'=>$h['segregated_on'],'date_from'=>$h['date_from'],'date_to'=>$h['date_to']];
     }
     echo json_encode($js);
 ?>;
+
+// All events with dates — for dynamic filtered pending computation
+const allEventsWithDates = <?php echo json_encode(array_map(fn($e) => ['name'=>$e['name'],'date'=>$e['date'],'end_date'=>$e['end_date']??$e['date']], $eventsRaw)); ?>;
+const segregatedEventNamesSet = new Set(<?php echo json_encode(array_keys($segregatedEventNames)); ?>);
+
+// All pending events data for JS-driven filtered rendering
+const allPendingEventsData = <?php
+    $pendingForJS = [];
+    foreach ($pendingEvents as $pev) {
+        $pendingForJS[] = [
+            'name'     => $pev['name'],
+            'venue'    => $pev['venue'],
+            'date'     => $pev['date'],
+            'end_date' => $pev['end_date'] ?? $pev['date'],
+            'multiday' => (bool)$pev['multiday'],
+        ];
+    }
+    echo json_encode(array_values($pendingForJS));
+?>;
+
+function renderPendingEventsList(from, to) {
+    const container = document.getElementById('pending_events_list');
+    if (!container) return;
+
+    const filtered = allPendingEventsData.filter(ev => {
+        if (!from && !to) return true;
+        const evStart = ev.date || '';
+        const evEnd   = ev.end_date || ev.date || '';
+        return (!from || evEnd >= from) && (!to || evStart <= to);
+    });
+
+    if (filtered.length === 0) {
+        container.innerHTML = '<p style="color:green;font-weight:bold;margin-top:12px;">✅ No pending events in this period.</p>';
+        return;
+    }
+
+    container.innerHTML = filtered.map(ev => {
+        const startFmt = ev.date ? new Date(ev.date + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) : '';
+        const endFmt   = ev.end_date ? new Date(ev.end_date + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) : '';
+        const pdate    = ev.multiday && ev.end_date && ev.end_date !== ev.date ? `${startFmt} – ${endFmt}` : startFmt;
+        const safeName  = ev.name.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const safeVenue = ev.venue.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid #f5dada;border-radius:8px;margin-bottom:8px;background:#fff9f9;">
+            <div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:16px;">📋</span>
+                    <span style="font-weight:700;color:#222;">${safeName}</span>
+                    <span style="color:#888;font-size:12px;">— ${safeVenue}</span>
+                </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+                <span style="font-size:12px;color:#555;">${pdate}</span>
+                <span style="background:#e74c3c;color:white;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;">Pending</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+/* Load analytics data via AJAX — only fires when Analytics tab first opens */
+function loadAnalyticsData() {
+    const loadingEl = document.getElementById('analytics_loading_msg');
+    if (loadingEl) loadingEl.style.display = 'block';
+
+    fetch('analytics_data.php', { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(data => {
+            analyticsLoaded   = true;
+            if (loadingEl) loadingEl.style.display = 'none';
+
+            segregMonthlyData    = data.segregMonthly;
+            heatmapByDateAll     = data.heatmapByDate;
+            venueLabels          = data.venueLabels;
+            venueCounts_         = data.venueCounts;
+            teamLabels           = data.teamLabels;
+            teamCounts_          = data.teamCounts;
+            schoolLabelsJS       = data.schoolLabels;
+            schoolCountsJS       = data.schoolCounts;
+            schoolDateStats      = data.schoolDateStats || [];
+            eventParticipationJS = data.eventParticipation;
+            totalSegRunsAll      = data.totalSegRuns;
+            totalPendingAll      = data.totalPending;
+            totalStudentsAll     = data.totalStudents;
+            avgStudentsPerRunAll  = data.avgStudentsPerRun;
+            avgEventsPerRunAll    = data.avgEventsPerRun;
+            allSegHistoryJS       = data.segHistory;
+
+            // Update students KPI card with real value from DB
+            const el = document.getElementById('kpi_students');
+            if (el) el.textContent = totalStudentsAll.toLocaleString('en-IN');
+
+            setTimeout(initCharts, 50);
+            const [initFrom, initTo] = getTimeBounds();
+            renderPendingEventsList(initFrom, initTo);
+        })
+        .catch(err => {
+            console.error('Analytics load failed:', err);
+            if (loadingEl) loadingEl.innerHTML = '<p style="color:#c0392b;font-weight:700;">⚠ Could not load analytics. Please refresh the page.</p>';
+        });
+}
 
 const baseColor    = 'rgb(27,0,93)';
 const accentColor  = 'rgb(90,0,200)';
@@ -1888,6 +2004,14 @@ function getTimeBounds() {
         return [`${fy}-${fm}-01`, `${ty}-${tm}-${String(lastDay).padStart(2,'0')}`];
     }
     return [null, null];
+}
+
+/* ===== FILTERED STUDENTS HELPER ===== */
+function computeFilteredStudents(from, to) {
+    if (!schoolDateStats || schoolDateStats.length === 0) return totalStudentsAll;
+    return schoolDateStats
+        .filter(r => (!from || r.date >= from) && (!to || r.date <= to))
+        .reduce((sum, r) => sum + r.total, 0);
 }
 
 /* ===== FILTER HELPERS ===== */
@@ -2015,9 +2139,25 @@ function applyAnalyticsFilter() {
 
     // Update KPI values
     const upd = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const [from, to] = getTimeBounds();
+    const filteredStudents = computeFilteredStudents(from, to);
+    // Compute filtered pending: events in date range that haven't been segregated
+    const filteredPending = allEventsWithDates.filter(ev => {
+        if (segregatedEventNamesSet.has(ev.name)) return false;
+        if (!from && !to) return true;
+        const evStart = ev.date || '';
+        const evEnd   = ev.end_date || ev.date || '';
+        return (!from || evEnd >= from) && (!to || evStart <= to);
+    }).length;
+
     upd('kpi_total_events', evArr.length);
     upd('kpi_single', s);
     upd('kpi_multi',  m);
+    upd('kpi_students', filteredStudents.toLocaleString('en-IN'));
+    upd('kpi_pending', filteredPending);
+
+    // Update pending events list to match selected time filter
+    renderPendingEventsList(from, to);
 
     // Always update insights (no chart dependency)
     buildInsights(evArr);
@@ -2217,6 +2357,26 @@ function confirmAddEvent() {
 }
 
 /* ===== DOWNLOAD ANALYTICS REPORT — TXT ===== */
+function downloadSegSummaryPDF(lines, fname) {
+    const { jsPDF } = window.jspdf;
+    const doc  = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+    const PW   = 210, PH = 297, ML = 10, MR = 10, MT = 12, lineH = 4.5;
+    const maxW = PW - ML - MR;
+    doc.setFont('courier', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    let y = MT;
+    lines.forEach(line => {
+        const wrapped = doc.splitTextToSize(line === '' ? ' ' : line, maxW);
+        wrapped.forEach(wline => {
+            if (y + lineH > PH - 10) { doc.addPage(); y = MT; }
+            doc.text(wline, ML, y);
+            y += lineH;
+        });
+    });
+    doc.save(fname);
+}
+
 function downloadAnalyticsTXT() {
     const evArr      = getAnalyticsFilteredEvents();
     const typeF      = (document.getElementById('analytics_type_filter')?.value) || 'all';
@@ -2232,11 +2392,14 @@ function downloadAnalyticsTXT() {
     let timeLabel    = pillLabels[pill] || 'All Time';
     if (from && to)  timeLabel += ` (${from} to ${to})`;
     const totalType  = Object.values(typeCounts).reduce((a,b)=>a+b,0);
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const dayNames   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const avgSt      = totalSegRunsAll > 0 ? Math.round(totalStudentsAll / totalSegRunsAll).toLocaleString() : '0';
 
+    // Build plain text lines (same as before)
     const sep  = '=======================================================';
     const dash = '-------------------------------------------------------';
     const lines = [];
-
     lines.push(sep);
     lines.push('  VIT SMART ATTENDANCE SEGREGATOR - Analytics Summary');
     lines.push(`  Generated   : ${now}`);
@@ -2244,28 +2407,21 @@ function downloadAnalyticsTXT() {
     lines.push(`  Event Type  : ${typeLabel}`);
     lines.push(sep);
     lines.push('');
-
     lines.push('--- KEY METRICS ---');
     lines.push(`  Total Events (filtered)   : ${evArr.length}`);
     lines.push(`  Single-Day Events         : ${s}`);
     lines.push(`  Multi-Day Events          : ${m}`);
     lines.push(`  Total Segregations Done   : ${totalSegRunsAll}`);
     lines.push(`  Total Students Processed  : ${totalStudentsAll.toLocaleString()}`);
-    const avgSt = totalSegRunsAll > 0 ? Math.round(totalStudentsAll / totalSegRunsAll).toLocaleString() : '0';
     lines.push(`  Avg Students/Segregation  : ${avgSt}`);
     lines.push(`  Pending Segregation       : ${totalPendingAll}`);
     lines.push('');
-
     lines.push('--- MONTHLY EVENT BREAKDOWN ---');
-    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     monthly.forEach((cnt, i) => lines.push(`  ${monthNames[i].padEnd(5)}: ${cnt}`));
     lines.push('');
-
     lines.push('--- BUSIEST DAY OF WEEK ---');
-    const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     dow.forEach((cnt, i) => lines.push(`  ${dayNames[i].padEnd(12)}: ${cnt}`));
     lines.push('');
-
     lines.push('--- EVENT TYPE BREAKDOWN ---');
     if (totalType === 0) {
         lines.push('  No data yet.');
@@ -2275,17 +2431,15 @@ function downloadAnalyticsTXT() {
         });
     }
     lines.push('');
-
     lines.push('--- EVENT PARTICIPATION ---');
     if (!eventParticipationJS || eventParticipationJS.length === 0) {
         lines.push('  No data yet.');
     } else {
         eventParticipationJS.forEach((ep, i) =>
-            lines.push(`  ${String(i+1)+'. '+ep.name}`.padEnd(42) + `: ${ep.count.toLocaleString()} students (${ep.schools} school file(s))`)
+            lines.push(`  ${(String(i+1)+'. '+ep.name).padEnd(40)}: ${ep.count.toLocaleString()} students (${ep.schools} school file(s))`)
         );
     }
     lines.push('');
-
     lines.push('--- SCHOOL-WISE ATTENDANCE ---');
     if (!schoolLabelsJS || schoolLabelsJS.length === 0) {
         lines.push('  No data yet.');
@@ -2295,7 +2449,6 @@ function downloadAnalyticsTXT() {
         );
     }
     lines.push('');
-
     lines.push('--- VENUE UTILISATION (Top 10) ---');
     if (!venueLabels || venueLabels.length === 0) {
         lines.push('  No data yet.');
@@ -2305,7 +2458,6 @@ function downloadAnalyticsTXT() {
         );
     }
     lines.push('');
-
     lines.push('--- FACULTY COORDINATOR LEADERBOARD (Top 10) ---');
     if (!teamLabels || teamLabels.length === 0) {
         lines.push('  No data yet.');
@@ -2315,18 +2467,36 @@ function downloadAnalyticsTXT() {
         );
     }
     lines.push('');
-
     lines.push(sep);
     lines.push('  VIT-IST | Office of Innovation, Startup & Technology Transfer');
     lines.push(sep);
 
-    const text  = lines.join('\n');
-    const fname = `VIT_Analytics_${pill}_${typeF==='all'?'All':typeF.replace(/[^a-z0-9]/gi,'_')}_${Date.now()}.txt`;
-    const blob  = new Blob([text], {type:'text/plain'});
-    const url   = URL.createObjectURL(blob);
-    const a     = document.createElement('a');
-    a.href = url; a.download = fname; a.click();
-    URL.revokeObjectURL(url);
+    // ── Render plain text into PDF using jsPDF Courier font ──
+    const { jsPDF } = window.jspdf;
+    const doc  = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
+    const PW   = 210, PH = 297, ML = 10, MR = 10, MT = 12, lineH = 4.5;
+    const maxW = PW - ML - MR;
+
+    doc.setFont('courier', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+
+    let y = MT;
+    lines.forEach(line => {
+        // wrap long lines
+        const wrapped = doc.splitTextToSize(line, maxW);
+        wrapped.forEach(wline => {
+            if (y + lineH > PH - 10) {
+                doc.addPage();
+                y = MT;
+            }
+            doc.text(wline, ML, y);
+            y += lineH;
+        });
+    });
+
+    const fname = `VIT_Analytics_${pill}_${typeF==='all'?'All':typeF.replace(/[^a-z0-9]/gi,'_')}_${Date.now()}.pdf`;
+    doc.save(fname);
 }
 </script>
 
@@ -2357,4 +2527,10 @@ function downloadAnalyticsTXT() {
 <?php endif; ?>
 
 </body>
+<footer class="page-footer">
+    <p>
+        Developed by: <strong>Nithesh Kumar T</strong>, <strong>Umair Ahmed</strong>, <strong>Srishti Singh</strong><br>
+        Mentor: <strong>Dr M Jothish Kumar</strong>
+    </p>
+</footer>
 </html>

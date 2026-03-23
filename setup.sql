@@ -1,70 +1,86 @@
--- ============================================================
---  VIT Smart Attendance Segregator — Database Setup
---  Run this once in phpMyAdmin or MySQL CLI
--- ============================================================
 
-CREATE DATABASE IF NOT EXISTS attendance_segregator
-    CHARACTER SET utf8mb4
-    COLLATE utf8mb4_unicode_ci;
 
-USE attendance_segregator;
+CREATE DATABASE IF NOT EXISTS `attendance_segregator`
+CHARACTER SET utf8mb4
+COLLATE utf8mb4_unicode_ci;
 
--- ------------------------------------------------------------
--- Table: events
--- Stores both single-day and multi-day events
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS events (
-    id                INT             AUTO_INCREMENT PRIMARY KEY,
-    name              VARCHAR(255)    NOT NULL,
-    venue             VARCHAR(255)    NOT NULL,
-    organising_team   VARCHAR(255)    DEFAULT '',       -- Faculty Coordinator name
-    school            VARCHAR(255)    NOT NULL DEFAULT '',
-    phone_number      CHAR(10)        NOT NULL DEFAULT '',  -- 10-digit, compulsory
-    event_type        VARCHAR(100)    DEFAULT '',
-    multiday          TINYINT(1)      NOT NULL DEFAULT 0,
-    date              DATE            NOT NULL,          -- first day (or only day)
-    end_date          DATE            DEFAULT NULL,      -- last day (multiday only)
-    time              VARCHAR(100)    DEFAULT NULL,      -- single-day timing string
-    days              JSON            DEFAULT NULL,      -- multiday: [{date,time}, ...]
-    created_at        TIMESTAMP       DEFAULT CURRENT_TIMESTAMP
-);
+USE `attendance_segregator`;
 
--- ------------------------------------------------------------
--- Table: segregation_history
--- One row per segregation run (may include multiple events)
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS segregation_history (
-    id              INT             AUTO_INCREMENT PRIMARY KEY,
-    run_date_range  VARCHAR(100)    DEFAULT '',        -- human-readable label
-    date_from       DATE            DEFAULT NULL,
-    date_to         DATE            DEFAULT NULL,
-    segregated_on   DATETIME        NOT NULL,
-    events          JSON            DEFAULT NULL,      -- array of {name,venue,organising_team,multiday,days}
-    zips            JSON            DEFAULT NULL       -- array of zip filenames
-);
+SET NAMES utf8mb4;
+SET time_zone = '+05:30';
+SET foreign_key_checks = 0;
 
--- ------------------------------------------------------------
--- Table: schools
--- School name → array of department codes
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS schools (
-    id              INT             AUTO_INCREMENT PRIMARY KEY,
-    school_name     VARCHAR(100)    NOT NULL UNIQUE,
-    codes           JSON            NOT NULL           -- e.g. ["BVD","BEC","BML"]
-);
 
--- ------------------------------------------------------------
--- Migration: Run these only if upgrading an existing database
--- (skip if creating fresh)
--- ------------------------------------------------------------
--- ALTER TABLE events ADD COLUMN event_type    VARCHAR(100) DEFAULT ''   AFTER organising_team;
--- ALTER TABLE events ADD COLUMN school        VARCHAR(255) NOT NULL DEFAULT '' AFTER organising_team;
--- ALTER TABLE events ADD COLUMN phone_number  CHAR(10)     NOT NULL DEFAULT '' AFTER school;
+CREATE TABLE IF NOT EXISTS `events` (
+    `id`              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `name`            VARCHAR(255) NOT NULL,
+    `venue`           VARCHAR(255) NOT NULL,
+    `faculty_coordinator` VARCHAR(100) NOT NULL DEFAULT '',
+    `school`          VARCHAR(100) NOT NULL DEFAULT '',
+    `phone_number`    VARCHAR(15)  NOT NULL DEFAULT '',
+    `event_type`      VARCHAR(100) NOT NULL DEFAULT '',
+    `multiday`        TINYINT(1)   NOT NULL DEFAULT 0,
+    `date`            DATE         NOT NULL,
+    `end_date`        DATE DEFAULT NULL,
+    `time`            VARCHAR(50) DEFAULT NULL,
+    `days`            JSON DEFAULT NULL,
+    `created_at`      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
--- ------------------------------------------------------------
--- Seed: School → department codes
--- ------------------------------------------------------------
-INSERT INTO schools (school_name, codes) VALUES
+    INDEX idx_events_date (`date`),
+    INDEX idx_events_end_date (`end_date`),
+    INDEX idx_events_type (`event_type`(50)),
+    INDEX idx_events_multiday (`multiday`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+
+
+CREATE TABLE IF NOT EXISTS `segregation_history` (
+    `id`             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `run_date_range` VARCHAR(100) NOT NULL DEFAULT '',
+    `date_from`      DATE NOT NULL,
+    `date_to`        DATE NOT NULL,
+    `segregated_on`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `events`         JSON DEFAULT NULL,
+    `zips`           JSON DEFAULT NULL,
+
+    INDEX idx_history_seg_on (`segregated_on`),
+    INDEX idx_history_date_from (`date_from`),
+    INDEX idx_history_date_to (`date_to`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS `segregation_stats` (
+    `id`            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `history_id`    INT UNSIGNED NOT NULL,
+    `school_name`   VARCHAR(100) NOT NULL,
+    `event_name`    VARCHAR(255) NOT NULL,
+    `student_count` INT UNSIGNED NOT NULL DEFAULT 0,
+    `segregated_on` DATETIME NOT NULL,
+
+    CONSTRAINT `fk_stats_history`
+        FOREIGN KEY (`history_id`)
+        REFERENCES `segregation_history`(`id`)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+
+    INDEX idx_stats_history (`history_id`),
+    INDEX idx_stats_school (`school_name`),
+    INDEX idx_stats_event (`event_name`(100)),
+    INDEX idx_stats_seg_on (`segregated_on`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE IF NOT EXISTS `schools` (
+    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `school_name` VARCHAR(100) NOT NULL UNIQUE,
+    `codes` JSON NOT NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_schools_name (`school_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO `schools` (`school_name`, `codes`) VALUES
 ('SENSE',   '["BVD","BEC","BML"]'),
 ('SCOPE',   '["BBS","BDS","BCT","BCB","MIC","BAI","MID","BCI","BKT","BCE"]'),
 ('SCORE',   '["BIT","BCA","BCS","MCA","MAG","BYB","BDE","MIS"]'),
@@ -82,3 +98,5 @@ INSERT INTO schools (school_name, codes) VALUES
 ('VSMART',  '["BVC","BAM"]'),
 ('V-SIGN',  '["BID"]'),
 ('V-SPARC', '["BARC"]');
+
+SET foreign_key_checks = 1;
