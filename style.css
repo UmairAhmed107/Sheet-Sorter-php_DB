@@ -1,0 +1,307 @@
+body {
+    margin: 0;
+    font-family: Rajdhani, sans-serif;
+    background: white;
+    color: black;
+}
+
+/* HEADER */
+.main-header {
+    background-color: white;
+    color: black;
+    text-align: center;
+    padding: 30px 20px;
+    border-bottom: 2px solid #e5e5e5;
+}
+
+.logo-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 60px;
+    margin-bottom: 15px;
+}
+
+.logo {
+    height: 80px;
+}
+
+.header-text h2 {
+    margin: 5px 0;
+    font-weight: 500;
+    letter-spacing: 2px;
+}
+
+.header-text h1 {
+    margin: 5px 0;
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: 3px;
+}
+
+/* CONTAINER */
+.container {
+    width: 70%;
+    margin: 40px auto;
+}
+
+/* NAV */
+.nav {
+    text-align: center;
+    margin-bottom: 25px;
+}
+
+.nav button {
+    padding: 10px 25px;
+    margin: 5px;
+    background: rgb(27,0,93);
+    border: none;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    border-radius: 6px;
+}
+
+.nav button:hover {
+    background: rgb(45, 0, 140);
+}
+
+/* PAGE */
+.page {
+    display: none;
+    background: white;
+    padding: 25px;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+}
+
+.page.active {
+    display: block;
+}
+
+/* FORM */
+.form-row {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 15px;
+}
+
+input, select {
+    padding: 8px;
+    border-radius: 5px;
+    border: 1px solid #ccc;
+    margin-top: 5px;
+    font-family: Rajdhani, sans-serif;
+}
+
+.time-group {
+    display: flex;
+    justify-content: space-between;
+}
+
+.time-group div {
+    width: 48%;
+}
+
+/* SUBMIT BUTTON */
+.submit-btn {
+    padding: 10px;
+    width: 100%;
+    background: rgb(27,0,93);
+    border: none;
+    border-radius: 5px;
+    font-weight: bold;
+    cursor: pointer;
+    color: white;
+    margin-top: 10px;
+    transition: 0.3s;
+}
+
+.submit-btn:hover {
+    background: rgb(45, 0, 140);
+}
+
+.download-btn {
+    display: block;
+    text-align: center;
+    text-decoration: none;
+}
+
+/* ADMIN TABLE */
+.history-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+
+.history-table th,
+.history-table td {
+    border: 1px solid #ccc;
+    padding: 10px;
+    text-align: center;
+}
+
+.history-table th {
+    background: #f3f3f3;
+    color: black;
+}
+
+/* MODAL */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 999;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0,0,0,0.6);
+}
+
+.modal-content {
+    background: white;
+    color: black;
+    margin: 10% auto;
+    padding: 30px;
+    border-radius: 12px;
+    width: 50%;
+    text-align: left;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+}
+
+.modal-content button {
+    display: block;
+    margin: 20px auto 0 auto;
+    padding: 10px 25px;
+    background: rgb(27,0,93);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.modal-content button:hover {
+    background: rgb(45, 0, 140);
+}
+
+/* LOGIN PAGE */
+.login-page {
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: white;
+}
+
+.login-box {
+    width: 350px;
+    padding: 40px;
+    border-radius: 12px;
+    background: white;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+    text-align: center;
+    border: 1px solid #e5e5e5;
+}
+
+.login-box h2 {
+    margin-bottom: 20px;
+    color: black;
+}
+
+.login-box input {
+    width: 100%;
+    margin-bottom: 15px;
+}
+
+.error {
+    color: red;
+    margin-bottom: 10px;
+    font-weight: bold;
+}
+
+/* TOP BAR */
+.top-bar {
+    width: 100%;
+    padding: 10px 25px;
+    background: white;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    border-bottom: 1px solid #e5e5e5;
+}
+
+.user-menu {
+    display: flex;
+    align-items: center;
+    color: black;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.mini-profile {
+    width: 35px;
+    height: 35px;
+    border-radius: 50%;
+    margin-right: 8px;
+    border: 2px solid #ccc;
+}
+
+.dropdown {
+    position: absolute;
+    top: 60px;
+    right: 25px;
+    width: 260px;
+    background: white;
+    border-radius: 10px;
+    display: none;
+    padding: 20px;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.25);
+}
+
+.dropdown-profile img {
+    width: 100px;
+    height: 100px;
+    border-radius: 50%;
+    border: 3px solid #ccc;
+}
+
+.logout-btn {
+    display: block;
+    padding: 10px;
+    text-align: center;
+    background: rgb(27,0,93);
+    color: white;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: bold;
+    transition: 0.3s;
+    border: none;
+}
+
+.logout-btn:hover {
+    background: rgb(45, 0, 140);
+}
+#events_table_container{
+    overflow-x: auto;
+}
+.btn-delete{
+    white-space:nowrap;
+}
+.page-footer {
+    width: 100%;
+    padding: 12px 20px;
+    background-color: rgb(27,0,93); 
+    color: white;
+    text-align: center;
+    font-size: 14px;
+    position: relative; 
+    bottom: 0;
+    margin-top: 30px; 
+    border-top: 2px solid #fff;
+}
+
+.page-footer strong {
+    font-weight: 600;
+}
